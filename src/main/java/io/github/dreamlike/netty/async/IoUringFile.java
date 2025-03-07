@@ -9,6 +9,7 @@ import io.netty.channel.unix.Errors;
 import io.netty.channel.uring.IoUringIoEvent;
 import io.netty.channel.uring.IoUringIoHandle;
 import io.netty.channel.uring.IoUringIoOps;
+import io.netty.util.collection.IntObjectHashMap;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.GenericFutureListener;
 
@@ -86,50 +87,6 @@ public class IoUringFile {
                     }
                 });
         return initFuture;
-    }
-
-    public CompletableFuture<Integer> writeAsync(ByteBuf byteBuf, long offset) {
-        if (!ioRegistration.isValid()) {
-            throw new IllegalStateException("ioRegistration is not valid");
-        }
-
-        if (!byteBuf.hasMemoryAddress()) {
-            throw new IllegalArgumentException("byteBuf is not direct");
-        }
-
-        int len = byteBuf.readableBytes();
-        if (len == 0) {
-            throw new IllegalArgumentException("len is 0");
-        }
-
-        return Helper.syscallTransform("writeAsync", ioUringIoHandle.writeAsync(ioRegistration, byteBuf.retain(), offset, fd))
-                .whenComplete((syscallResult, t) -> {
-                    byteBuf.release();
-                    if (t == null) {
-                        byteBuf.readerIndex(byteBuf.readerIndex() + syscallResult);
-                    }
-                });
-    }
-
-    public CompletableFuture<Integer> readAsync(ByteBuf byteBuf, long offset) {
-        if (!ioRegistration.isValid()) {
-            throw new IllegalStateException("ioRegistration is not valid");
-        }
-        if (!byteBuf.hasMemoryAddress()) {
-            throw new IllegalArgumentException("byteBuf is not direct");
-        }
-        int len = byteBuf.writableBytes();
-        if (len == 0) {
-            throw new IllegalArgumentException("len is 0");
-        }
-
-        return Helper.syscallTransform("readAsync", ioUringIoHandle.readAsync(ioRegistration, byteBuf.retain(), offset, fd))
-                .whenComplete((syscallResult, t) -> {
-                    byteBuf.release();
-                    if (t == null) {
-                        byteBuf.writerIndex(byteBuf.writerIndex() + syscallResult);
-                    }
-                });
     }
 
     private static int calFlag(OpenOption... options) {
@@ -219,67 +176,140 @@ public class IoUringFile {
         return oflags;
     }
 
+    public CompletableFuture<Integer> writeAsync(ByteBuf byteBuf, long offset) {
+        if (!ioRegistration.isValid()) {
+            throw new IllegalStateException("ioRegistration is not valid");
+        }
+
+        if (!byteBuf.hasMemoryAddress()) {
+            throw new IllegalArgumentException("byteBuf is not direct");
+        }
+
+        int len = byteBuf.readableBytes();
+        if (len == 0) {
+            throw new IllegalArgumentException("len is 0");
+        }
+
+        return Helper.syscallTransform("writeAsync", ioUringIoHandle.writeAsync(ioRegistration, byteBuf.retain(), offset, fd))
+                .whenComplete((syscallResult, t) -> {
+                    byteBuf.release();
+                    if (t == null) {
+                        byteBuf.readerIndex(byteBuf.readerIndex() + syscallResult);
+                    }
+                });
+    }
+
+    public CompletableFuture<Integer> readAsync(ByteBuf byteBuf, long offset) {
+        if (!ioRegistration.isValid()) {
+            throw new IllegalStateException("ioRegistration is not valid");
+        }
+        if (!byteBuf.hasMemoryAddress()) {
+            throw new IllegalArgumentException("byteBuf is not direct");
+        }
+        int len = byteBuf.writableBytes();
+        if (len == 0) {
+            throw new IllegalArgumentException("len is 0");
+        }
+
+        return Helper.syscallTransform("readAsync", ioUringIoHandle.readAsync(ioRegistration, byteBuf.retain(), offset, fd))
+                .whenComplete((syscallResult, t) -> {
+                    byteBuf.release();
+                    if (t == null) {
+                        byteBuf.writerIndex(byteBuf.writerIndex() + syscallResult);
+                    }
+                });
+    }
+
     private static class IoUringFileIoHandle implements IoUringIoHandle {
 
-        private CompletableFuture<Integer> readFuture;
-
-        private CompletableFuture<Integer> writeFuture;
-
         private final IoEventLoop ioEventLoop;
+        private IntObjectHashMap<CompletableFuture<Integer>> readFuture;
+        private short readId = Short.MIN_VALUE;
+        private IntObjectHashMap<CompletableFuture<Integer>> writeFuture;
+        private short writeId = Short.MIN_VALUE;
 
         private IoUringFileIoHandle(IoEventLoop ioEventLoop) {
             this.ioEventLoop = ioEventLoop;
+            this.readFuture = new IntObjectHashMap<>();
+            this.writeFuture = new IntObjectHashMap<>();
         }
 
         private CompletableFuture<Integer> openAsync(IoRegistration registration, ByteBuf pathCStr, int flags, int mode) {
             IoUringIoOps ioOps = new IoUringIoOps(
                     Constant.IORING_OP_OPENAT, (byte) 0, (short) 0, -1,
                     0L, pathCStr.memoryAddress(), mode, flags,
-                    (short) 0, (short) 0, (short) 0, 0, 0L
+                    readId, (short) 0, (short) 0, 0, 0L
             );
-            readFuture = new CompletableFuture<>();
+            CompletableFuture<Integer> openFuture = new CompletableFuture<>();
+            readFuture.put(readId, openFuture);
             registration.submit(ioOps);
-            return readFuture;
+            return openFuture;
         }
 
         private CompletableFuture<Integer> writeAsync(IoRegistration registration, ByteBuf buffer, long offset, int fd) {
-            IoUringIoOps ioOps = new IoUringIoOps(
-                    Constant.IORING_OP_WRITE, (byte) 0, (short) 0, fd,
-                    offset, buffer.memoryAddress(), buffer.readableBytes(), 0,
-                    (short) 0, (short) 0, (short) 0, 0, 0L
-            );
+
             CompletableFuture<Integer> writeFuture = new CompletableFuture<>();
             if (ioEventLoop.inEventLoop()) {
-                //可见性
-                this.writeFuture = writeFuture;
-                registration.submit(ioOps);
+                submitWrite(registration, buffer, offset, fd, writeFuture);
             } else {
                 ioEventLoop.execute(() -> {
-                    this.writeFuture = writeFuture;
-                    registration.submit(ioOps);
+                    submitWrite(registration, buffer, offset, fd, writeFuture);
                 });
             }
             return writeFuture;
         }
 
+        private void submitWrite(IoRegistration ioRegistration, ByteBuf buffer, long offset, int fd, CompletableFuture<Integer> promise) {
+            assert ioEventLoop.inEventLoop();
+            IoUringIoOps ioOps = null;
+            while (true) {
+                short writeId = this.writeId;
+                this.writeId = (short) (writeId + 1);
+                if (writeFuture.containsKey(writeId)) {
+                    continue;
+                }
+                ioOps = new IoUringIoOps(
+                        Constant.IORING_OP_WRITE, (byte) 0, (short) 0, fd,
+                        offset, buffer.memoryAddress(), buffer.readableBytes(), 0,
+                        writeId, (short) 0, (short) 0, 0, 0L
+                );
+                writeFuture.put(writeId, promise);
+                break;
+            }
+            ioRegistration.submit(ioOps);
+        }
+
         private CompletableFuture<Integer> readAsync(IoRegistration registration, ByteBuf buffer, long offset, int fd) {
 
-            IoUringIoOps ioOps = new IoUringIoOps(
-                    Constant.IORING_OP_READ, (byte) 0, (short) 0, fd,
-                    offset, buffer.memoryAddress(), buffer.writableBytes(), 0,
-                    (short) 0, (short) 0, (short)0, 0, 0L
-            );
             CompletableFuture<Integer> readFuture = new CompletableFuture<>();
             if (ioEventLoop.inEventLoop()) {
-                this.readFuture = readFuture;
-                registration.submit(ioOps);
+                submitRead(registration, buffer, offset, fd, readFuture);
             } else {
                 ioEventLoop.execute(() -> {
-                    this.readFuture = readFuture;
-                    registration.submit(ioOps);
+                    submitRead(registration, buffer, offset, fd, readFuture);
                 });
             }
             return readFuture;
+        }
+
+        private void submitRead(IoRegistration ioRegistration, ByteBuf buffer, long offset, int fd, CompletableFuture<Integer> promise) {
+            assert ioEventLoop.inEventLoop();
+            IoUringIoOps ioOps = null;
+            while (true) {
+                short readId = this.readId;
+                this.readId = (short) (readId + 1);
+                if (readFuture.containsKey(readId)) {
+                    continue;
+                }
+                ioOps = new IoUringIoOps(
+                        Constant.IORING_OP_READ, (byte) 0, (short) 0, fd,
+                        offset, buffer.memoryAddress(), buffer.writableBytes(), 0,
+                        readId, (short) 0, (short) 0, 0, 0L
+                );
+                readFuture.put(readId, promise);
+                break;
+            }
+            ioRegistration.submit(ioOps);
         }
 
         @Override
@@ -287,16 +317,18 @@ public class IoUringFile {
             IoUringIoEvent event = (IoUringIoEvent) ioEvent;
             byte opCode = event.opcode();
             if (opCode == Constant.IORING_OP_OPENAT || opCode == Constant.IORING_OP_READ) {
-                CompletableFuture<Integer> future = readFuture;
-                readFuture = null;
-                future.complete(event.res());
+                CompletableFuture<Integer> future = readFuture.remove(event.data());
+                if (future != null) {
+                    future.complete(event.res());
+                }
                 return;
             }
 
             if (opCode == Constant.IORING_OP_WRITE) {
-                CompletableFuture<Integer> future = writeFuture;
-                writeFuture = null;
-                future.complete(event.res());
+                CompletableFuture<Integer> future = writeFuture.remove(event.data());
+                if (future != null) {
+                    future.complete(event.res());
+                }
                 return;
             }
         }
