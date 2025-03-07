@@ -102,8 +102,34 @@ public class IoUringFile {
             throw new IllegalArgumentException("len is 0");
         }
 
-        return ioUringIoHandle.writeAsync(ioRegistration, byteBuf.retain(), offset, fd)
-                .whenComplete((syscallResult, t) -> byteBuf.release());
+        return Helper.syscallTransform("writeAsync", ioUringIoHandle.writeAsync(ioRegistration, byteBuf.retain(), offset, fd))
+                .whenComplete((syscallResult, t) -> {
+                    byteBuf.release();
+                    if (t == null) {
+                        byteBuf.readerIndex(byteBuf.readerIndex() + syscallResult);
+                    }
+                });
+    }
+
+    public CompletableFuture<Integer> readAsync(ByteBuf byteBuf, long offset) {
+        if (!ioRegistration.isValid()) {
+            throw new IllegalStateException("ioRegistration is not valid");
+        }
+        if (!byteBuf.hasMemoryAddress()) {
+            throw new IllegalArgumentException("byteBuf is not direct");
+        }
+        int len = byteBuf.writableBytes();
+        if (len == 0) {
+            throw new IllegalArgumentException("len is 0");
+        }
+
+        return Helper.syscallTransform("readAsync", ioUringIoHandle.readAsync(ioRegistration, byteBuf.retain(), offset, fd))
+                .whenComplete((syscallResult, t) -> {
+                    byteBuf.release();
+                    if (t == null) {
+                        byteBuf.writerIndex(byteBuf.writerIndex() + syscallResult);
+                    }
+                });
     }
 
     private static int calFlag(OpenOption... options) {
@@ -217,7 +243,6 @@ public class IoUringFile {
         }
 
         private CompletableFuture<Integer> writeAsync(IoRegistration registration, ByteBuf buffer, long offset, int fd) {
-            //todo 增强并发度
             IoUringIoOps ioOps = new IoUringIoOps(
                     Constant.IORING_OP_WRITE, (byte) 0, (short) 0, fd,
                     offset, buffer.memoryAddress(), buffer.readableBytes(), 0,
@@ -227,7 +252,6 @@ public class IoUringFile {
             if (ioEventLoop.inEventLoop()) {
                 //可见性
                 this.writeFuture = writeFuture;
-                //todo处理 submit返回值
                 registration.submit(ioOps);
             } else {
                 ioEventLoop.execute(() -> {
@@ -236,6 +260,26 @@ public class IoUringFile {
                 });
             }
             return writeFuture;
+        }
+
+        private CompletableFuture<Integer> readAsync(IoRegistration registration, ByteBuf buffer, long offset, int fd) {
+
+            IoUringIoOps ioOps = new IoUringIoOps(
+                    Constant.IORING_OP_READ, (byte) 0, (short) 0, fd,
+                    offset, buffer.memoryAddress(), buffer.writableBytes(), 0,
+                    (short) 0, (short) 0, (short)0, 0, 0L
+            );
+            CompletableFuture<Integer> readFuture = new CompletableFuture<>();
+            if (ioEventLoop.inEventLoop()) {
+                this.readFuture = readFuture;
+                registration.submit(ioOps);
+            } else {
+                ioEventLoop.execute(() -> {
+                    this.readFuture = readFuture;
+                    registration.submit(ioOps);
+                });
+            }
+            return readFuture;
         }
 
         @Override

@@ -1,5 +1,6 @@
 import io.github.dreamlike.netty.async.IoUringFile;
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.IoEventLoop;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
@@ -42,8 +43,25 @@ public class AsyncFileTest {
         byte[] bytes = "hello world".getBytes();
         ByteBuf buffer = Unpooled.directBuffer();
         buffer.writeBytes(bytes);
+
         Integer res = ioUringFile.writeAsync(buffer, 0).get();
         Assertions.assertEquals(bytes.length, res);
         Assertions.assertArrayEquals(bytes, Files.readAllBytes(file.toPath()));
+
+        Assertions.assertEquals(0, buffer.readableBytes());
+    }
+
+    @Test
+    public void testRead() throws IOException, ExecutionException, InterruptedException {
+        File file = File.createTempFile("sss", ".txt");
+        file.deleteOnExit();
+        CompletableFuture<IoUringFile> ioUringFileCompletableFuture = IoUringFile.open(file, ioEventLoop, StandardOpenOption.READ, StandardOpenOption.WRITE);
+        IoUringFile ioUringFile = Assertions.assertDoesNotThrow(() -> ioUringFileCompletableFuture.get());
+        byte[] bytes = "hello world".getBytes();
+        Files.write(file.toPath(), bytes, StandardOpenOption.WRITE);
+        ByteBuf buffer = Unpooled.directBuffer();
+        Integer res = ioUringFile.readAsync(buffer, 0).get();
+        Assertions.assertEquals(bytes.length, res);
+        Assertions.assertArrayEquals(bytes, ByteBufUtil.getBytes(buffer));
     }
 }
