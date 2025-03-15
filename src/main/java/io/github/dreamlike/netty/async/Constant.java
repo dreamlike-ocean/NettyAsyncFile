@@ -12,7 +12,9 @@ class Constant {
     public final static int O_DIRECT = 16384;
     public final static int O_DSYNC = 4096;
     public final static int O_SYNC = 1052672;
+    static final byte IORING_OP_ASYNC_CANCEL = 14;
     static final byte IORING_OP_OPENAT = 18;
+    static final byte IORING_OP_CLOSE = 19;
     static final byte IORING_OP_READ = 22;
     static final byte IORING_OP_WRITE = 23;
 }

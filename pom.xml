@@ -12,26 +12,24 @@
         <maven.compiler.source>8</maven.compiler.source>
         <maven.compiler.target>8</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <netty.version>4.2.0.RC3</netty.version>
+        <netty.version>4.2.0.RC4</netty.version>
     </properties>
 
 
     <dependencies>
-
         <dependency>
             <groupId>io.netty</groupId>
             <artifactId>netty-transport-native-io_uring</artifactId>
-            <version>4.2.0.RC3</version>
+            <version>${netty.version}</version>
             <classifier>${os.detected.classifier}</classifier>
         </dependency>
+
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
             <version>RELEASE</version>
             <scope>test</scope>
         </dependency>
-
-
     </dependencies>
     <build>
         <extensions>
