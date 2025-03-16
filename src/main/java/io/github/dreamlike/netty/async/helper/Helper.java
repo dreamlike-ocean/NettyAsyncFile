@@ -1,11 +1,11 @@
-package io.github.dreamlike.netty.async;
+package io.github.dreamlike.netty.async.helper;
 
 import io.netty.channel.unix.Errors;
 
 import java.util.concurrent.CompletableFuture;
 
-class Helper {
-    static CompletableFuture<Integer> syscallTransform(String method, CompletableFuture<Integer> future) {
+public class Helper {
+    public static CompletableFuture<Integer> syscallTransform(String method, CompletableFuture<Integer> future) {
         return future.thenCompose(syscall -> {
             if (syscall < 0) {
                 return failureFuture(Errors.newIOException(method, syscall));
@@ -15,8 +15,8 @@ class Helper {
         });
     }
 
-    //java没有默认的failureFuture
-    static <T> CompletableFuture<T> failureFuture(Throwable throwable) {
+    //java8没有默认的failureFuture
+    public static <T> CompletableFuture<T> failureFuture(Throwable throwable) {
         CompletableFuture<T> future = new CompletableFuture<>();
         future.completeExceptionally(throwable);
         return future;

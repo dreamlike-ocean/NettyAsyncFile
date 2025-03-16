@@ -1,4 +1,4 @@
-import io.github.dreamlike.netty.async.IoUringFile;
+import io.github.dreamlike.netty.async.op.IoUringFile;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
@@ -106,5 +106,18 @@ public class AsyncFileTest {
         Integer res = ioUringFile.writevAsync(0, buffer1, buffer2).get();
         Assertions.assertEquals(10, res);
         Assertions.assertArrayEquals(new byte[]{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}, Files.readAllBytes(file.toPath()));
+    }
+
+    @Test
+    public void testFsync() throws IOException, ExecutionException, InterruptedException {
+        File file = new File("testFsync.txt");
+        file.createNewFile();
+        file.deleteOnExit();
+        IoUringFile ioUringFile = Assertions.assertDoesNotThrow(() -> IoUringFile.open(file, ioEventLoop, StandardOpenOption.READ, StandardOpenOption.WRITE).get());
+        byte[] bytes = new byte[]{0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+        Files.write(file.toPath(), bytes, StandardOpenOption.WRITE);
+        Assertions.assertEquals(0, ioUringFile.fsync().get());
+
+        Assertions.assertEquals(0, ioUringFile.fdatasync(0, 0).get());
     }
 }
